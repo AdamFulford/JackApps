@@ -9,7 +9,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(JACK REQUIRED jack)
 
 # External libraries
-#add_subdirectory(external/DaisySP)
+add_subdirectory(external/DaisySP)
 
 # Optional: common shared code
 #add_subdirectory(common)

@@ -2,11 +2,14 @@
 #include <iostream>
 #include <thread>
 #include <chrono>
+#include "../external/DaisySP/Source/daisysp.h"
+using namespace daisysp;
 
 jack_port_t* input_ports[2];
 jack_port_t* output_ports[2];
 jack_client_t* client = nullptr;
 
+Oscillator osc;
 
 // Real-time audio callback
 int process(jack_nframes_t nframes, void* arg)
@@ -17,8 +20,11 @@ int process(jack_nframes_t nframes, void* arg)
     float* outR = (float*)jack_port_get_buffer(output_ports[1], nframes);
 
     for (jack_nframes_t i = 0; i < nframes; i++) {
-        outL[i] = inL[i];  // passthrough left
-        outR[i] = inR[i];  // passthrough right
+
+        float gain{( osc.Process() + 1.0f) * 0.5f} ;
+
+        outL[i] = inL[i] * gain;  // passthrough left
+        outR[i] = inR[i] * gain;  // passthrough right
     }
 
     return 0;
@@ -32,6 +38,13 @@ void jack_shutdown(void*)
 
 int main()
 {
+
+    osc.Init(48000.0f);
+    osc.SetFreq(10.0f);
+    osc.SetAmp(1.0f);
+    osc.SetWaveform(Oscillator::WAVE_TRI);
+
+
     const char* client_name = "jack_passthrough_stereo";
     jack_options_t options = JackNullOption;
     jack_status_t status;
