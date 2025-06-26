@@ -2,6 +2,10 @@
 #include <iostream>
 #include <thread>
 #include <chrono>
+#include <csignal>
+#include <atomic>
+
+
 #include "../external/DaisySP/Source/daisysp.h"
 using namespace daisysp;
 
@@ -9,26 +13,48 @@ jack_port_t* input_ports[2];
 jack_port_t* output_ports[2];
 jack_client_t* client = nullptr;
 
-Oscillator osc;
+std::atomic<bool> running{true};
 
-// Real-time audio callback
-int process(jack_nframes_t nframes, void* arg)
+
+// Constants
+constexpr size_t kDelaySize = 48000; // 1 second @ 48kHz
+
+// === GLOBAL STATIC BUFFERS ===
+static float delay_buffer_L[kDelaySize];
+static float delay_buffer_R[kDelaySize];
+
+static DelayLine<float, kDelaySize> delay_L;
+static DelayLine<float, kDelaySize> delay_R;
+
+// Oscillator osc;
+
+// === JACK AUDIO CALLBACK ===
+int process(jack_nframes_t nframes, void*)
 {
-    float* inL = (float*)jack_port_get_buffer(input_ports[0], nframes);
-    float* inR = (float*)jack_port_get_buffer(input_ports[1], nframes);
-    float* outL = (float*)jack_port_get_buffer(output_ports[0], nframes);   
+    float* inL  = (float*)jack_port_get_buffer(input_ports[0], nframes);
+    float* inR  = (float*)jack_port_get_buffer(input_ports[1], nframes);
+    float* outL = (float*)jack_port_get_buffer(output_ports[0], nframes);
     float* outR = (float*)jack_port_get_buffer(output_ports[1], nframes);
 
-    for (jack_nframes_t i = 0; i < nframes; i++) {
+    for (jack_nframes_t i = 0; i < nframes; ++i)
+    {
+        float dryL = inL[i];
+        float dryR = inR[i];
 
-        float gain{( osc.Process() + 1.0f) * 0.5f} ;
+        float wetL = delay_L.Read();
+        float wetR = delay_R.Read();
 
-        outL[i] = inL[i] * gain;  // passthrough left
-        outR[i] = inR[i] * gain;  // passthrough right
+        delay_L.Write(dryL + wetL * 0.8f); // simple feedback
+        delay_R.Write(dryR + wetR * 0.8f);
+
+        outL[i] = wetL;
+        outR[i] = wetR;
     }
 
     return 0;
 }
+
+
 
 void jack_shutdown(void*)
 {
@@ -36,13 +62,26 @@ void jack_shutdown(void*)
     exit(1);
 }
 
+void signal_handler(int) {
+    running = false;
+}
+
 int main()
 {
 
-    osc.Init(48000.0f);
-    osc.SetFreq(10.0f);
-    osc.SetAmp(1.0f);
-    osc.SetWaveform(Oscillator::WAVE_TRI);
+        // Init delay line with static buffer
+    delay_L.Init();
+    delay_R.Init();
+
+    delay_L.SetDelay(10000.0f);
+    delay_R.SetDelay(8000.f);
+
+    // osc.Init(48000.0f);
+    // osc.SetFreq(10.0f);
+    // osc.SetAmp(1.0f);
+    // osc.SetWaveform(Oscillator::WAVE_TRI);
+
+    std::signal(SIGINT, signal_handler);
 
 
     const char* client_name = "jack_passthrough_stereo";
@@ -91,7 +130,7 @@ int main()
     std::cout << "Block size: " << buffer_size << " frames" << std::endl;
     std::cout << "Press Ctrl+C to quit." << std::endl;
 
-    while (true) {
+    while (running) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 
