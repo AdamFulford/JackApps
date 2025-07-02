@@ -7,6 +7,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Find JACK
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(JACK REQUIRED jack)
+pkg_check_modules(SNDFILE REQUIRED sndfile)
+
 
 # External libraries
 add_subdirectory(external/DaisySP)
@@ -17,3 +19,4 @@ add_subdirectory(external/DaisySP)
 # Add individual app folders
 add_subdirectory(passthru)
 add_subdirectory(synth440)
+add_subdirectory(CaptureExample)
