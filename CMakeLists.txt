@@ -17,6 +17,7 @@ add_subdirectory(external/DaisySP)
 #add_subdirectory(common)
 
 # Add individual app folders
-add_subdirectory(passthru)
+#add_subdirectory(passthru)
 add_subdirectory(synth440)
 add_subdirectory(CaptureExample)
+add_subdirectory(MultiDelay)
