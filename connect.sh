@@ -1,4 +1,0 @@
-jack_connect system:capture_1 jack_passthrough_stereo:input_L
-jack_connect system:capture_2 jack_passthrough_stereo:input_R
-jack_connect jack_passthrough_stereo:output_L system:playback_5
-jack_connect jack_passthrough_stereo:output_R system:playback_6

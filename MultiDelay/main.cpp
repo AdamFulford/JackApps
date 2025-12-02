@@ -9,9 +9,9 @@
 #include "../external/DaisySP/Source/daisysp.h"
 using namespace daisysp;
 
-constexpr int NUM_DELAYS = 128;          // Number of stereo delay lines
-constexpr size_t MAX_DELAY_MS = 5000.0f; // Max delay time in milliseconds
-constexpr size_t MIN_DELAY_MS = 100.0f;
+constexpr int NUM_DELAYS = 8;          // Number of stereo delay lines
+constexpr size_t MAX_DELAY_MS = 1000.0f; // Max delay time in milliseconds
+constexpr size_t MIN_DELAY_MS = 50.0f;
 constexpr float FEEDBACK = 0.4f;       // Shared feedback amount
 
 // JACK audio buffers
@@ -31,6 +31,7 @@ struct StereoDelay {
 };
 
 std::vector<StereoDelay> delays;
+Svf filters[2];
 
 // Simple helper to randomize float in range
 float randomFloat(float min, float max) {
@@ -56,16 +57,22 @@ int audioCallback(jack_nframes_t nframes, void *arg) {
             float delayedL = d.left.Read();
             float delayedR = d.right.Read();
 
-            sumL += delayedL * 0.5f;
-            sumR += delayedR * 0.5f;
+            sumL += delayedL * 0.1f;
+            sumR += delayedR * 0.1f;
 
             // Write current input + feedback
             d.left.Write(dryL + delayedL * FEEDBACK);
             d.right.Write(dryR + delayedR * FEEDBACK);
         }
 
-        outL[i] = dryL + sumL;
-        outR[i] = dryR + sumR;
+        filters[0].Process(sumL);
+        filters[1].Process(sumR);
+
+        float filtered_L{filters[0].Low()};
+        float filtered_R{filters[1].Low()};
+
+        outL[i] = dryL + filtered_L;
+        outR[i] = dryR + filtered_R;
     }
 
     return 0;
@@ -86,7 +93,7 @@ int main() {
 
     std::signal(SIGINT, signal_handler);
     // Open JACK client
-    const char *client_name = "jack_passthrough_stereo";
+    const char *client_name = "jack_multi_delay";
     jack_options_t options = JackNullOption;
     jack_status_t status;
     client = jack_client_open(client_name, options, &status);
@@ -110,6 +117,14 @@ int main() {
         d.right.SetDelay(delaySamples);
     }
 
+    //init filters
+
+    filters[0].Init(sampleRate);
+    filters[1].Init(sampleRate);
+
+    filters[0].SetFreq(800.0f);
+    filters[1].SetFreq(800.0f);
+
     // Register JACK ports
     input_l = jack_port_register(client, "input_L", JACK_DEFAULT_AUDIO_TYPE, JackPortIsInput, 0);
     input_r = jack_port_register(client, "input_R", JACK_DEFAULT_AUDIO_TYPE, JackPortIsInput, 0);
@@ -123,6 +138,14 @@ int main() {
         std::cerr << "Cannot activate JACK client." << std::endl;
         return 1;
     }
+
+    //connect ports
+
+    jack_connect(client, "system:capture_1", jack_port_name(input_l));
+    jack_connect(client, "system:capture_2", jack_port_name(input_r));
+
+    jack_connect(client, jack_port_name(output_l), "system:playback_5");
+    jack_connect(client, jack_port_name(output_r), "system:playback_6");
 
     std::cout << "Multi-delay JACK client running with " << NUM_DELAYS << " stereo delay lines.\n";
 
