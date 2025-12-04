@@ -1,10 +1,10 @@
 #include <jack/jack.h>
+#include <jack/midiport.h>
 #include <iostream>
 #include <thread>
 #include <chrono>
 #include <csignal>
 #include <atomic>
-
 
 #include "../external/DaisySP/Source/daisysp.h"
 using namespace daisysp;
@@ -12,16 +12,11 @@ using namespace daisysp;
 constexpr int NUM_DELAYS = 8;          // Number of stereo delay lines
 constexpr size_t MAX_DELAY_MS = 1000.0f; // Max delay time in milliseconds
 constexpr size_t MIN_DELAY_MS = 50.0f;
-constexpr float FEEDBACK = 0.4f;       // Shared feedback amount
 
-// JACK audio buffers
-jack_port_t *input_l, *input_r;
-jack_port_t *output_l, *output_r;
-jack_client_t *client;
 
-std::atomic<bool> running{true};
+// constexpr float FEEDBACK = 0.4f;       // Shared feedback amount
 
-float sampleRate;
+
 
 // A pair of delays for stereo
 struct StereoDelay {
@@ -30,7 +25,49 @@ struct StereoDelay {
     float delayTimeMs;
 };
 
+struct MidiCC {
+    uint8_t cc;
+    uint8_t value;
+};
+
+//simple SPSC ring buffer
+template <typename T, size_t N>
+class RingBuf {
+public:
+    bool push(const T& v) {
+        size_t next = (head + 1) % N;
+        if (next == tail) return false; // full
+        buffer[head] = v;
+        head = next;
+        return true;
+    }
+    bool pop(T& out) {
+        if (tail == head) return false; // empty
+        out = buffer[tail];
+        tail = (tail + 1) % N;
+        return true;
+    }
+private:
+    T buffer[N];
+    size_t head = 0, tail = 0;
+};
+
+//globals
+// JACK audio buffers
+jack_port_t *input_l, *input_r;
+jack_port_t *output_l, *output_r;
+jack_port_t *midi_in;
+jack_client_t *client;
+
+std::atomic<bool> running{true};
+std::atomic<float> FEEDBACK;
+float sampleRate;
+
+RingBuf<MidiCC, 256> midiQueue;
+
+
 std::vector<StereoDelay> delays;
+std::vector<float> delayTimes;
 Svf filters[2];
 
 // Simple helper to randomize float in range
@@ -46,6 +83,21 @@ int audioCallback(jack_nframes_t nframes, void *arg) {
     auto *inR = (float *)jack_port_get_buffer(input_r, nframes);
     auto *outL = (float *)jack_port_get_buffer(output_l, nframes);
     auto *outR = (float *)jack_port_get_buffer(output_r, nframes);
+
+    void* midiBuf = jack_port_get_buffer(midi_in, nframes);
+    jack_nframes_t eventCount = jack_midi_get_event_count(midiBuf);
+    jack_midi_event_t event;
+
+    for (jack_nframes_t i = 0; i < eventCount; ++i) {
+        if (jack_midi_event_get(&event, midiBuf, i) == 0) {
+            const uint8_t* data = event.buffer;
+
+            if ((data[0] & 0xF0) == 0xB0) { // CC message on any channel
+                MidiCC ccMsg{ data[1], data[2] };
+                midiQueue.push(ccMsg);     // very fast lock-free enqueue
+            }
+        }
+    }
 
     for (jack_nframes_t i = 0; i < nframes; ++i) {
         float dryL = inL[i];
@@ -65,14 +117,14 @@ int audioCallback(jack_nframes_t nframes, void *arg) {
             d.right.Write(dryR + delayedR * FEEDBACK);
         }
 
-        filters[0].Process(sumL);
-        filters[1].Process(sumR);
+        // filters[0].Process(sumL);
+        // filters[1].Process(sumR);
 
-        float filtered_L{filters[0].Low()};
-        float filtered_R{filters[1].Low()};
+        // float filtered_L{filters[0].Low()};
+        // float filtered_R{filters[1].Low()};
 
-        outL[i] = dryL + filtered_L;
-        outR[i] = dryR + filtered_R;
+        outL[i] = dryL + sumL;
+        outR[i] = dryR + sumR;
     }
 
     return 0;
@@ -89,7 +141,44 @@ void signal_handler(int) {
 }
 
 
+
+
 int main() {
+
+    std::atomic<bool> midiRunning{true};
+    std::thread midiThread([&]() {
+    while (midiRunning) {
+        MidiCC msg;
+        while (midiQueue.pop(msg)) {
+            // Handle CC from any MIDI controller
+            std::cout << "CC " << int(msg.cc)
+                      << " = " << int(msg.value) << std::endl;
+
+            // Example: adjust delay feedback or filter cutoff
+            // if (msg.cc == 1) {  // Mod wheel controls cutoff
+            //     float cutoff = 200.0f + msg.value * 10.0f;
+            //     filters[0].SetFreq(cutoff);
+            //     filters[1].SetFreq(cutoff);
+            // }
+            if (msg.cc == 1)
+            {
+                
+                FEEDBACK = (1.2f) * (msg.value / 127.0f);
+                
+                // float TimeFactor = 0.1f + (1.0f - 0.1f) * (msg.value / 127.0f);
+                // for(size_t d=0; d<NUM_DELAYS; d++)
+                // {
+                //     //set delay time 
+                //     float delaySamples = delays[d].delayTimeMs * (sampleRate / 1000.0f) * TimeFactor;
+                //     delays[d].left.SetDelay(delaySamples);
+                //     delays[d].right.SetDelay(delaySamples);
+                // }
+            }
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+});
 
     std::signal(SIGINT, signal_handler);
     // Open JACK client
@@ -108,13 +197,18 @@ int main() {
 
     // Create and init stereo delays
     delays.resize(NUM_DELAYS);
-    for (auto &d : delays) {
-        d.delayTimeMs = randomFloat(MIN_DELAY_MS, MAX_DELAY_MS);
-        float delaySamples = d.delayTimeMs * (sampleRate / 1000.0f);
-        d.left.Init();
-        d.right.Init();
-        d.left.SetDelay(delaySamples);
-        d.right.SetDelay(delaySamples);
+    delayTimes.resize(NUM_DELAYS);
+    // for (auto &d : delays) {
+    for(size_t d=0; d<NUM_DELAYS; d++)
+    {
+        delays[d].left.Init();
+        delays[d].right.Init();
+
+        delayTimes[d] = randomFloat(MIN_DELAY_MS, MAX_DELAY_MS);
+        delays[d].delayTimeMs = delayTimes[d];
+        float delaySamples = delays[d].delayTimeMs * (sampleRate / 1000.0f);
+        delays[d].left.SetDelay(delaySamples);
+        delays[d].right.SetDelay(delaySamples);
     }
 
     //init filters
@@ -130,6 +224,8 @@ int main() {
     input_r = jack_port_register(client, "input_R", JACK_DEFAULT_AUDIO_TYPE, JackPortIsInput, 0);
     output_l = jack_port_register(client, "output_L", JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
     output_r = jack_port_register(client, "output_R", JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
+
+    midi_in = jack_port_register(client, "midi_in", JACK_DEFAULT_MIDI_TYPE, JackPortIsInput, 0);
 
     // Set process callback and activate
     jack_set_process_callback(client, audioCallback, 0);
@@ -147,6 +243,8 @@ int main() {
     jack_connect(client, jack_port_name(output_l), "system:playback_5");
     jack_connect(client, jack_port_name(output_r), "system:playback_6");
 
+    jack_connect(client, "system:midi_capture_3", jack_port_name(midi_in));
+
     std::cout << "Multi-delay JACK client running with " << NUM_DELAYS << " stereo delay lines.\n";
 
     // Keep running
@@ -155,8 +253,10 @@ int main() {
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
         
-
     // Cleanup
+    // ---------- SHUTDOWN SEQUENCE ----------
+    midiRunning = false;  // tell MIDI thread to exit
+    midiThread.join();    // wait for it to finish (important!)
     jack_client_close(client);
     return 0;
 }
