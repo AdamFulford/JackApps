@@ -9,7 +9,7 @@
 #include "../external/DaisySP/Source/daisysp.h"
 using namespace daisysp;
 
-constexpr int NUM_DELAYS = 8;          // Number of stereo delay lines
+constexpr int NUM_DELAYS = 4;          // Number of stereo delay lines
 constexpr size_t MAX_DELAY_MS = 1000.0f; // Max delay time in milliseconds
 constexpr size_t MIN_DELAY_MS = 50.0f;
 
@@ -100,6 +100,18 @@ int audioCallback(jack_nframes_t nframes, void *arg) {
     }
 
     for (jack_nframes_t i = 0; i < nframes; ++i) {
+
+        static float delayTimeFiltered[NUM_DELAYS]{};
+
+        for(size_t d=0; d<NUM_DELAYS; d++)
+        {
+            //fitler then set delay time 
+            float delaySamples = delayTimes[d] * (sampleRate / 1000.0f);
+            fonepole(delayTimeFiltered[d],delaySamples,0.001f);
+            delays[d].left.SetDelay(delayTimeFiltered[d]);
+            delays[d].right.SetDelay(delayTimeFiltered[d]);
+        }
+
         float dryL = inL[i];
         float dryR = inR[i];
         float sumL = 0.0f;
@@ -154,12 +166,6 @@ int main() {
             std::cout << "CC " << int(msg.cc)
                       << " = " << int(msg.value) << std::endl;
 
-            // Example: adjust delay feedback or filter cutoff
-            // if (msg.cc == 1) {  // Mod wheel controls cutoff
-            //     float cutoff = 200.0f + msg.value * 10.0f;
-            //     filters[0].SetFreq(cutoff);
-            //     filters[1].SetFreq(cutoff);
-            // }
             if (msg.cc == 1)
             {
                 
@@ -174,6 +180,21 @@ int main() {
                 //     delays[d].right.SetDelay(delaySamples);
                 // }
             }
+
+            if (msg.cc == 71 || msg.cc == 72  || msg.cc == 73 || msg.cc == 74)
+            {
+                delayTimes[msg.cc - 71] = 100.0f + (1900.0f) * (msg.value / 127.0f);
+
+                // float TimeFactor = 0.1f + (1.0f - 0.1f) * (msg.value / 127.0f);
+                // for(size_t d=0; d<NUM_DELAYS; d++)
+                // {
+                //     //set delay time 
+                //     float delaySamples = delays[d].delayTimeMs * (sampleRate / 1000.0f) * TimeFactor;
+                //     delays[d].left.SetDelay(delaySamples);
+                //     delays[d].right.SetDelay(delaySamples);
+                // }
+            }
+            
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -204,7 +225,7 @@ int main() {
         delays[d].left.Init();
         delays[d].right.Init();
 
-        delayTimes[d] = randomFloat(MIN_DELAY_MS, MAX_DELAY_MS);
+        delayTimes[d] = 100;
         delays[d].delayTimeMs = delayTimes[d];
         float delaySamples = delays[d].delayTimeMs * (sampleRate / 1000.0f);
         delays[d].left.SetDelay(delaySamples);
